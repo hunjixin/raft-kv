@@ -9,9 +9,9 @@ use crate::NodeId;
 
 // Representation of an application state. This struct can be shared around to share
 // instances of raft, store and more.
+#[derive(Clone)]
 pub struct App {
     pub id: NodeId,
-    pub api_addr: String,
     pub rpc_addr: String,
     pub raft: Raft,
     pub key_values: Arc<RwLock<BTreeMap<String, String>>>,

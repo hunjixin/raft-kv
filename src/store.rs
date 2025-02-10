@@ -18,9 +18,9 @@ use serde::Deserialize;
 use serde::Serialize;
 use tokio::sync::RwLock;
 
+use crate::log_store::RocksLogStore;
 use crate::typ::*;
 use crate::TypeConfig;
-use crate::log_store::RocksLogStore;
 
 /**
  * Here you will set the types of request that will interact with the raft nodes.
@@ -221,7 +221,11 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
         Ok(Box::new(Cursor::new(Vec::new())))
     }
 
-    async fn install_snapshot(&mut self, meta: &SnapshotMeta, snapshot: Box<SnapshotData>) -> Result<(), StorageError> {
+    async fn install_snapshot(
+        &mut self,
+        meta: &SnapshotMeta,
+        snapshot: Box<Cursor<Vec<u8>>>,
+    ) -> Result<(), StorageError> {
         let new_snapshot = StoredSnapshot {
             meta: meta.clone(),
             data: snapshot.into_inner(),

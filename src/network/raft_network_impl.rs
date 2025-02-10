@@ -1,24 +1,64 @@
-use std::any::Any;
-use std::fmt::Display;
-
 use openraft::error::InstallSnapshotError;
 use openraft::error::NetworkError;
 use openraft::error::RemoteError;
+use openraft::error::Unreachable;
 use openraft::network::RPCOption;
 use openraft::network::RaftNetwork;
 use openraft::network::RaftNetworkFactory;
-use openraft::AnyError;
+use openraft::raft::AppendEntriesRequest;
+use openraft::raft::AppendEntriesResponse;
+use openraft::raft::InstallSnapshotRequest;
+use openraft::raft::InstallSnapshotResponse;
+use openraft::raft::VoteRequest;
+use openraft::raft::VoteResponse;
 use serde::de::DeserializeOwned;
-use toy_rpc::pubsub::AckModeNone;
-use toy_rpc::Client;
+use serde::Serialize;
 
-use super::raft::RaftClientStub;
 use crate::typ::*;
 use crate::Node;
 use crate::NodeId;
 use crate::TypeConfig;
 
 pub struct Network {}
+
+impl Network {
+    pub async fn send_rpc<Req, Resp, Err>(
+        &self,
+        target: NodeId,
+        target_node: &Node,
+        uri: &str,
+        req: Req,
+    ) -> Result<Resp, openraft::error::RPCError<TypeConfig, Err>>
+    where
+        Req: Serialize,
+        Err: std::error::Error + DeserializeOwned,
+        Resp: DeserializeOwned,
+    {
+        let addr = &target_node.rpc_addr;
+
+        let url = format!("http://{}/raft/{}", addr, uri);
+        tracing::debug!("send_rpc to url: {}", url);
+
+        let client = reqwest::Client::new();
+        tracing::debug!("client is created for: {}", url);
+
+        let resp = client.post(url).json(&req).send().await.map_err(|e| {
+            // If the error is a connection error, we return `Unreachable` so that connection isn't retried
+            // immediately.
+            if e.is_connect() {
+                return openraft::error::RPCError::Unreachable(Unreachable::new(&e));
+            }
+            openraft::error::RPCError::Network(NetworkError::new(&e))
+        })?;
+
+        tracing::debug!("client.post() is sent");
+
+        let res: Result<Resp, Err> =
+            resp.json().await.map_err(|e| openraft::error::RPCError::Network(NetworkError::new(&e)))?;
+
+        res.map_err(|e| openraft::error::RPCError::RemoteError(RemoteError::new(target, e)))
+    }
+}
 
 // NOTE: This could be implemented also on `Arc<ExampleNetwork>`, but since it's empty, implemented
 // directly.
@@ -27,112 +67,42 @@ impl RaftNetworkFactory<TypeConfig> for Network {
 
     #[tracing::instrument(level = "debug", skip_all)]
     async fn new_client(&mut self, target: NodeId, node: &Node) -> Self::Network {
-        let addr = format!("ws://{}", node.rpc_addr);
-
-        let client = Client::dial_websocket(&addr).await.ok();
-        tracing::debug!("new_client: is_none: {}", client.is_none());
-
-        NetworkConnection { addr, client, target }
+        NetworkConnection {
+            owner: Network {},
+            target,
+            target_node: node.clone(),
+        }
     }
 }
 
 pub struct NetworkConnection {
-    addr: String,
-    client: Option<Client<AckModeNone>>,
+    owner: Network,
     target: NodeId,
-}
-impl NetworkConnection {
-    async fn c<E: std::error::Error + DeserializeOwned>(&mut self) -> Result<&Client<AckModeNone>, RPCError<E>> {
-        if self.client.is_none() {
-            self.client = Client::dial_websocket(&self.addr).await.ok();
-        }
-        self.client.as_ref().ok_or_else(|| RPCError::Network(NetworkError::from(AnyError::default())))
-    }
+    target_node: Node,
 }
 
-#[derive(Debug)]
-struct ErrWrap(Box<dyn std::error::Error>);
-
-impl Display for ErrWrap {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-impl std::error::Error for ErrWrap {}
-
-fn to_error<E: std::error::Error + 'static + Clone>(e: toy_rpc::Error, target: NodeId) -> RPCError<E> {
-    match e {
-        toy_rpc::Error::IoError(e) => RPCError::Network(NetworkError::new(&e)),
-        toy_rpc::Error::ParseError(e) => RPCError::Network(NetworkError::new(&ErrWrap(e))),
-        toy_rpc::Error::Internal(e) => {
-            let any: &dyn Any = &e;
-            let error: &E = any.downcast_ref().unwrap();
-            RPCError::RemoteError(RemoteError::new(target, error.clone()))
-        }
-        e @ (toy_rpc::Error::InvalidArgument
-        | toy_rpc::Error::ServiceNotFound
-        | toy_rpc::Error::MethodNotFound
-        | toy_rpc::Error::ExecutionError(_)
-        | toy_rpc::Error::Canceled(_)
-        | toy_rpc::Error::Timeout(_)
-        | toy_rpc::Error::MaxRetriesReached(_)) => RPCError::Network(NetworkError::new(&e)),
-    }
-}
-
-// With nightly-2023-12-20, and `err(Debug)` in the instrument macro, this gives the following lint
-// warning. Without `err(Debug)` it is OK. Suppress it with `#[allow(clippy::blocks_in_conditions)]`
-//
-// warning: in a `match` scrutinee, avoid complex blocks or closures with blocks; instead, move the
-// block or closure higher and bind it with a `let`
-//
-//    --> src/network/raft_network_impl.rs:99:91
-//     |
-// 99  |       ) -> Result<AppendEntriesResponse<NodeId>, RPCError<C, RaftError<C>>>
-// {
-//     |  ___________________________________________________________________________________________^
-// 100 | |         tracing::debug!(req = debug(&req), "append_entries");
-// 101 | |
-// 102 | |         let c = self.c().await?;
-// ...   |
-// 108 | |         raft.append(req).await.map_err(|e| to_error(e, self.target))
-// 109 | |     }
-//     | |_____^
-//     |
-//     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#blocks_in_conditions
-//     = note: `#[warn(clippy::blocks_in_conditions)]` on by default
-#[allow(clippy::blocks_in_conditions)]
 impl RaftNetwork<TypeConfig> for NetworkConnection {
-    #[tracing::instrument(level = "debug", skip_all, err(Debug))]
     async fn append_entries(
         &mut self,
-        req: AppendEntriesRequest,
+        req: AppendEntriesRequest<TypeConfig>,
         _option: RPCOption,
-    ) -> Result<AppendEntriesResponse, RPCError<RaftError>> {
-        tracing::debug!(req = debug(&req), "append_entries");
-
-        let c = self.c().await?;
-        tracing::debug!("got connection");
-
-        let raft = c.raft();
-        tracing::debug!("got raft");
-
-        raft.append(req).await.map_err(|e| to_error(e, self.target))
+    ) -> Result<AppendEntriesResponse<TypeConfig>, RPCError<RaftError>> {
+        self.owner.send_rpc(self.target, &self.target_node, "raft-append", req).await
     }
 
-    #[tracing::instrument(level = "debug", skip_all, err(Debug))]
     async fn install_snapshot(
         &mut self,
-        req: InstallSnapshotRequest,
+        req: InstallSnapshotRequest<TypeConfig>,
         _option: RPCOption,
-    ) -> Result<InstallSnapshotResponse, RPCError<RaftError<InstallSnapshotError>>> {
-        tracing::debug!(req = debug(&req), "install_snapshot");
-        self.c().await?.raft().snapshot(req).await.map_err(|e| to_error(e, self.target))
+    ) -> Result<InstallSnapshotResponse<TypeConfig>, RPCError<RaftError<InstallSnapshotError>>> {
+        self.owner.send_rpc(self.target, &self.target_node, "raft-snapshot", req).await
     }
 
-    #[tracing::instrument(level = "debug", skip_all, err(Debug))]
-    async fn vote(&mut self, req: VoteRequest, _option: RPCOption) -> Result<VoteResponse, RPCError<RaftError>> {
-        tracing::debug!(req = debug(&req), "vote");
-        self.c().await?.raft().vote(req).await.map_err(|e| to_error(e, self.target))
+    async fn vote(
+        &mut self,
+        req: VoteRequest<TypeConfig>,
+        _option: RPCOption,
+    ) -> Result<VoteResponse<TypeConfig>, RPCError<RaftError>> {
+        self.owner.send_rpc(self.target, &self.target_node, "raft-vote", req).await
     }
 }

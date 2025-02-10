@@ -1,34 +1,50 @@
 use std::sync::Arc;
 
-use toy_rpc::macros::export_impl;
+use axum::extract::State;
+use axum::response::IntoResponse;
+use axum::routing::post;
+use axum::Json;
+use axum::Router;
+use openraft::raft::AppendEntriesRequest;
+use openraft::raft::InstallSnapshotRequest;
+use openraft::raft::VoteRequest;
 
 use crate::app::App;
-use crate::typ::*;
+use crate::network::app_error::AppError;
+use crate::TypeConfig;
 
-/// Raft protocol service.
-pub struct Raft {
-    app: Arc<App>,
+// --- Raft communication
+
+pub fn rest() -> Router<Arc<App>> {
+    Router::new().nest(
+        "/raft",
+        Router::new()
+            .route("/raft-vote", post(vote))
+            .route("/raft-append", post(append))
+            .route("/raft-snapshot", post(snapshot)),
+    )
 }
 
-#[export_impl]
-impl Raft {
-    pub fn new(app: Arc<App>) -> Self {
-        Self { app }
-    }
+pub async fn vote(
+    State(state): State<Arc<App>>,
+    Json(req): Json<VoteRequest<TypeConfig>>,
+) -> Result<impl IntoResponse, AppError> {
+    let res = state.raft.vote(req).await;
+    Ok(Json(res))
+}
 
-    #[export_method]
-    pub async fn vote(&self, vote: VoteRequest) -> Result<VoteResponse, toy_rpc::Error> {
-        self.app.raft.vote(vote).await.map_err(|e| toy_rpc::Error::Internal(Box::new(e)))
-    }
+pub async fn append(
+    State(state): State<Arc<App>>,
+    Json(req): Json<AppendEntriesRequest<TypeConfig>>,
+) -> Result<impl IntoResponse, AppError> {
+    let res = state.raft.append_entries(req).await;
+    Ok(Json(res))
+}
 
-    #[export_method]
-    pub async fn append(&self, req: AppendEntriesRequest) -> Result<AppendEntriesResponse, toy_rpc::Error> {
-        tracing::debug!("handle append");
-        self.app.raft.append_entries(req).await.map_err(|e| toy_rpc::Error::Internal(Box::new(e)))
-    }
-
-    #[export_method]
-    pub async fn snapshot(&self, req: InstallSnapshotRequest) -> Result<InstallSnapshotResponse, toy_rpc::Error> {
-        self.app.raft.install_snapshot(req).await.map_err(|e| toy_rpc::Error::Internal(Box::new(e)))
-    }
+pub async fn snapshot(
+    State(state): State<Arc<App>>,
+    Json(req): Json<InstallSnapshotRequest<TypeConfig>>,
+) -> Result<impl IntoResponse, AppError> {
+    let res = state.raft.install_snapshot(req).await;
+    Ok(Json(res))
 }
