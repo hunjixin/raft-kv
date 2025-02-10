@@ -8,7 +8,7 @@ struct Args {
     #[clap(long)]
     pub cur_id: u64,
 
-    #[clap(long, default_value="127.0.0.1:45678")]
+    #[clap(long, default_value="0.0.0.0:45678")]
     pub listen: String,
 
     #[clap(long)]

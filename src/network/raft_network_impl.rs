@@ -55,7 +55,9 @@ impl Network {
 
         let res: Result<Resp, Err> =
             resp.json().await.map_err(|e| openraft::error::RPCError::Network(NetworkError::new(&e)))?;
-
+        if let Err(e)= res.as_ref() {
+            println!("request fail {}", e);
+        }
         res.map_err(|e| openraft::error::RPCError::RemoteError(RemoteError::new(target, e)))
     }
 }
