@@ -54,8 +54,9 @@ pub async fn start_example_raft_node<P>(node_id: NodeId, dir: P, listen: String,
 where P: AsRef<Path> {
     // Create a configuration for the raft instance.
     let config = Config {
-        heartbeat_interval: 500,
+        heartbeat_interval: 499,
         election_timeout_min: 500,
+        election_timeout_max: 1000,
         ..Default::default()
     };
 
