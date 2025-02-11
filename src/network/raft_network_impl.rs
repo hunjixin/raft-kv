@@ -13,6 +13,7 @@ use openraft::raft::VoteRequest;
 use openraft::raft::VoteResponse;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+use tokio::time::Instant;
 
 use crate::typ::*;
 use crate::Node;
@@ -34,6 +35,7 @@ impl Network {
         Err: std::error::Error + DeserializeOwned,
         Resp: DeserializeOwned,
     {
+        let now = Instant::now();
         let addr = &target_node.rpc_addr;
 
         let url = format!("http://{}/raft/{}", addr, uri);
@@ -51,13 +53,10 @@ impl Network {
             openraft::error::RPCError::Network(NetworkError::new(&e))
         })?;
 
-        tracing::debug!("client.post() is sent");
+        tracing::info!("client.post() is sent {:?}", now.elapsed());
 
         let res: Result<Resp, Err> =
             resp.json().await.map_err(|e| openraft::error::RPCError::Network(NetworkError::new(&e)))?;
-        if let Err(e)= res.as_ref() {
-            println!("request fail {}", e);
-        }
         res.map_err(|e| openraft::error::RPCError::RemoteError(RemoteError::new(target, e)))
     }
 }
