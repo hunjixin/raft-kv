@@ -55,7 +55,7 @@ where P: AsRef<Path> {
     // Create a configuration for the raft instance.
     let config = Config {
         heartbeat_interval: 500,
-        election_timeout_min: 299,
+        election_timeout_min: 500,
         ..Default::default()
     };
 
